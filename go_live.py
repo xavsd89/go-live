@@ -1,104 +1,69 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 import datetime
 
-# Initialize Firebase using the credentials stored in Streamlit secrets
-def initialize_firebase():
-    # Load Firebase credentials from Streamlit secrets
-    firebase_credentials = st.secrets["firebase_credentials"]
-    cred_dict = json.loads(firebase_credentials)
-    cred = credentials.Certificate(cred_dict)
+# Initialize Firebase app
+if not firebase_admin._apps:
+    cred = credentials.Certificate({
+        "type": st.secrets["firebase_credentials"]["type"],
+        "project_id": st.secrets["firebase_credentials"]["project_id"],
+        "private_key_id": st.secrets["firebase_credentials"]["private_key_id"],
+        "private_key": st.secrets["firebase_credentials"]["private_key"].replace("\\n", "\n"),
+        "client_email": st.secrets["firebase_credentials"]["client_email"],
+        "client_id": st.secrets["firebase_credentials"]["client_id"],
+        "auth_uri": st.secrets["firebase_credentials"]["auth_uri"],
+        "token_uri": st.secrets["firebase_credentials"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["firebase_credentials"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["firebase_credentials"]["client_x509_cert_url"],
+        "universe_domain": st.secrets["firebase_credentials"]["universe_domain"]
+    })
+    firebase_admin.initialize_app(cred)
 
-    # Initialize the Firebase app (only if it's not already initialized)
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
+# Firestore client
+db = firestore.client()
 
-    # Return a Firestore client
-    return firestore.client()
-
-# Firebase Firestore operation (e.g., insert project)
+# Function to insert a project into Firestore
 def insert_project_to_firestore(project_name, go_live_date):
-    db = initialize_firebase()
-    projects_ref = db.collection('projects')
-    project_data = {
-        "project_name": project_name,
-        "go_live_date": go_live_date
-    }
-    projects_ref.add(project_data)
+    try:
+        # Access Firestore collection "projects"
+        project_ref = db.collection('projects').document(project_name)
+        project_ref.set({
+            'project_name': project_name,
+            'go_live_date': go_live_date
+        })
+        st.success(f"Project '{project_name}' added successfully!")
+    except Exception as e:
+        st.error(f"Error inserting project: {e}")
+        st.write(e)  # Debug information
 
-# Firebase Firestore operation (e.g., load projects)
+# Function to load all projects from Firestore
 def load_projects_from_firestore():
-    db = initialize_firebase()
-    projects_ref = db.collection('projects')
-    docs = projects_ref.stream()
-    projects = {}
-    for doc in docs:
-        project_data = doc.to_dict()
-        project_name = project_data.get("project_name")
-        go_live_date = project_data.get("go_live_date")
-        projects[project_name] = go_live_date
-    return projects
+    try:
+        # Access Firestore collection "projects"
+        projects_ref = db.collection('projects')
+        projects = {}
+        docs = projects_ref.stream()
+        for doc in docs:
+            project = doc.to_dict()
+            projects[doc.id] = project['go_live_date']
+        return projects
+    except Exception as e:
+        st.error(f"Error loading projects: {e}")
+        return {}
 
-# Streamlit Page Setup
-st.title("Project Management with Firebase")
+# Streamlit Interface
+st.title("Project Countdown App")
 
-# Dropdown to select project
-projects = load_projects_from_firestore()
-
-if projects:
-    project_name = st.selectbox("Select a Project", list(projects.keys()))
-    st.write(f"Go Live Date: {projects[project_name]}")
-
-# Admin Page (for adding projects)
-if st.button("Add Project"):
-    project_name = st.text_input("Project Name")
-    go_live_date = st.date_input("Go Live Date")
-    
-    if st.button("Submit"):
-        if project_name and go_live_date:
-            insert_project_to_firestore(project_name, go_live_date)
-            st.success(f"Project '{project_name}' added successfully!")
-
-# Admin login (for added security)
-ADMIN_PASSWORD = "admin123"
-if "is_admin" not in st.session_state:
+# Sidebar for admin authentication
+if 'is_admin' not in st.session_state:
     st.session_state.is_admin = False
 
-# Sidebar for admin password input
-password = st.sidebar.text_input("Enter Admin Password", type="password")
-if password == ADMIN_PASSWORD:
-    st.session_state.is_admin = True
-    st.sidebar.success("Logged in as Admin")
-else:
-    if password != "":
-        st.sidebar.error("Invalid Password")
+page = st.sidebar.radio("Select Page", ["Countdown", "Setup (Admin only)"])
 
-# Admin section to upload projects
-if st.session_state.is_admin:
-    st.sidebar.subheader("Upload Project Data")
-    
-    uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
-    if uploaded_file:
-        # Process the uploaded Excel file
-        import pandas as pd
-        df = pd.read_excel(uploaded_file)
-        if 'Project Name' not in df.columns or 'Go Live Date' not in df.columns:
-            st.sidebar.error('Excel must have "Project Name" and "Go Live Date" columns')
-        else:
-            for _, row in df.iterrows():
-                project_name = row['Project Name']
-                go_live_date = pd.to_datetime(row['Go Live Date']).strftime('%Y-%m-%d %H:%M:%S')
-                insert_project_to_firestore(project_name, go_live_date)
-            st.sidebar.success("Projects uploaded successfully")
-
-# Display the available projects for countdown
+# Countdown Page
 if page == "Countdown":
-    if 'projects' not in st.session_state:
-        st.session_state.projects = load_projects_from_firestore()
-
-    projects = st.session_state.projects
+    projects = load_projects_from_firestore()
 
     if projects:
         project = st.selectbox("Select a project", list(projects.keys()))
@@ -134,18 +99,36 @@ if page == "Countdown":
     else:
         st.write("No projects in the database. Upload some!")
 
-# Template download (for first-time users)
-def generate_template():
-    data = {
-        'Project Name': ['Project A', 'Project B'],
-        'Go Live Date': ['2024-12-01 12:00:00', '2024-12-15 15:00:00']
-    }
-    df = pd.DataFrame(data)
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False)
-    buffer.seek(0)
-    return buffer
+# Admin Page (for admin only)
+elif page == "Setup (Admin only)":
+    password = st.sidebar.text_input("Enter Admin Password", type="password")
+    if password == "admin123":  # Replace with your actual admin password
+        st.session_state.is_admin = True
+        st.sidebar.success("Logged in as Admin")
+        
+        # Add project form
+        project_name = st.sidebar.text_input("Project Name")
+        go_live_date = st.sidebar.text_input("Go Live Date (YYYY-MM-DD HH:MM:SS)", value=str(datetime.datetime.now()))
 
-st.sidebar.subheader("Download Excel Template")
-template = generate_template()
-st.sidebar.download_button("Download Template", data=template, file_name="template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        if st.sidebar.button("Add Project"):
+            try:
+                go_live_date = datetime.datetime.strptime(go_live_date, "%Y-%m-%d %H:%M:%S")
+                insert_project_to_firestore(project_name, go_live_date)
+            except ValueError:
+                st.sidebar.error("Invalid Go Live Date format. Please use YYYY-MM-DD HH:MM:SS.")
+
+        # Delete project form
+        projects = load_projects_from_firestore()
+        if projects:
+            project_to_delete = st.sidebar.selectbox("Delete Project", list(projects.keys()))
+            if st.sidebar.button("Delete"):
+                try:
+                    db.collection('projects').document(project_to_delete).delete()
+                    st.sidebar.success(f"Deleted {project_to_delete}")
+                except Exception as e:
+                    st.sidebar.error(f"Error deleting project: {e}")
+        else:
+            st.sidebar.write("No projects to delete.")
+    else:
+        st.sidebar.write("Please log in to manage projects.")
+
