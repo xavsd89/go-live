@@ -1,13 +1,13 @@
 import streamlit as st
+import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
-import pandas as pd
 import sqlite3
 import datetime
 import time
 from io import BytesIO
 
-# Firebase setup from Streamlit Secrets
+# Firebase initialization
 cred_dict = st.secrets["firebase"]
 cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
@@ -16,51 +16,62 @@ db = firestore.client()
 
 ADMIN_PASSWORD = "admin123"
 
-# Drop the existing projects collection in Firestore (if needed)
-def drop_firestore_collection():
-    projects_ref = db.collection("projects")
-    docs = projects_ref.stream()
-    for doc in docs:
-        doc.reference.delete()
+# SQLite Database setup
+def drop_table():
+    conn = sqlite3.connect('projects.db')
+    conn.execute('DROP TABLE IF EXISTS projects')
+    conn.commit()
+    conn.close()
 
-# Create the Firestore collection for storing project details
-def create_firestore_collection():
-    projects_ref = db.collection("projects")
-    # Optionally, create a test entry to check if it works
-    projects_ref.add({
-        "project_name": "Test Project",
-        "go_live_date": datetime.datetime.now()
-    })
+def create_db():
+    conn = sqlite3.connect('projects.db')
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS projects (
+        project_name TEXT,
+        go_live_date TEXT
+    )''')
+    conn.commit()
+    conn.close()
 
-# Insert project into Firestore
-def insert_project_firestore(project_name, go_live_date):
-    projects_ref = db.collection("projects")
-    projects_ref.add({
-        "project_name": project_name,
-        "go_live_date": go_live_date
-    })
+def insert_project(project_name, go_live_date):
+    conn = sqlite3.connect('projects.db')
+    conn.execute('INSERT INTO projects (project_name, go_live_date) VALUES (?, ?)', 
+                 (project_name, go_live_date))
+    conn.commit()
+    conn.close()
 
-# Load all projects from Firestore
-def load_projects_firestore():
-    projects_ref = db.collection("projects")
-    docs = projects_ref.stream()
-    projects = {doc.id: doc.to_dict()["go_live_date"] for doc in docs}
+def delete_project(project_name):
+    conn = sqlite3.connect('projects.db')
+    conn.execute('DELETE FROM projects WHERE project_name = ?', (project_name,))
+    conn.commit()
+    conn.close()
+
+def load_projects():
+    conn = sqlite3.connect('projects.db')
+    cursor = conn.execute('SELECT project_name, go_live_date FROM projects')
+    projects = {row[0]: datetime.datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S') for row in cursor.fetchall()}
+    conn.close()
     return projects
 
-# Handle Excel upload
 def upload_file(uploaded_file):
     df = pd.read_excel(uploaded_file)
     if 'Project Name' not in df.columns or 'Go Live Date' not in df.columns:
         st.error('Excel must have "Project Name" and "Go Live Date" columns')
         return
-     
+    
     for _, row in df.iterrows():
         project_name = row['Project Name']
-        go_live_date = pd.to_datetime(row['Go Live Date'])
-        insert_project_firestore(project_name, go_live_date)
-    st.success('Projects uploaded')
+        go_live_date = pd.to_datetime(row['Go Live Date']).strftime('%Y-%m-%d %H:%M:%S')
+        insert_project(project_name, go_live_date)
+        
+        # Also upload to Firebase Firestore
+        db.collection("projects").add({
+            'project_name': project_name,
+            'go_live_date': go_live_date
+        })
+    
+    st.success('Projects uploaded to both SQLite and Firebase')
 
-# Generate an Excel template for first-time users
 def generate_template():
     data = {
         'Project Name': ['Project A', 'Project B'],
@@ -70,81 +81,45 @@ def generate_template():
     buffer = BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
-    return buffer
+    st.download_button(label="Download Project Template", data=buffer, file_name="project_template.xlsx")
 
-# Initialize Firestore if it doesn't exist
-drop_firestore_collection()
-create_firestore_collection()
+# Streamlit UI
+st.title('Project Management System')
 
-# Set session state for admin
-if 'is_admin' not in st.session_state:
-    st.session_state.is_admin = False
+create_db()  # Initialize DB
 
-# Sidebar page selection
-page = st.sidebar.radio("Select Page", ["Countdown", "Setup (Admin only)"])
+if st.button('Clear Projects'):
+    drop_table()
+    create_db()
+    st.success('Database cleared')
 
-# Countdown Page
-if page == "Countdown":
-    if 'projects' not in st.session_state:
-        st.session_state.projects = load_projects_firestore()
+tab1, tab2, tab3 = st.tabs(["Projects", "Upload", "Admin"])
 
-    projects = st.session_state.projects
-
+# Tab 1: View Projects
+with tab1:
+    st.header('All Projects')
+    projects = load_projects()
     if projects:
-        project = st.selectbox("Select a project", list(projects.keys()))
-
-        def get_time_left(go_live):
-            return go_live - datetime.datetime.now()
-
-        st.write(f"Go Live date for {project}: {projects[project]}")
-
-        countdown_placeholder = st.empty()
-
-        while True:
-            time_left = get_time_left(projects[project])
-            if time_left > datetime.timedelta(0):
-                days_left = time_left.days
-                hours_left, remainder = divmod(time_left.seconds, 3600)
-                minutes_left, seconds_left = divmod(remainder, 60)
-
-                # Full spelling without commas, singular/plural handled
-                days_text = f"{days_left} day{'s' if days_left != 1 else ''}"
-                hours_text = f"{hours_left} hour{'s' if hours_left != 1 else ''}"
-                minutes_text = f"{minutes_left} minute{'s' if minutes_left != 1 else ''}"
-                seconds_text = f"{seconds_left} second{'s' if seconds_left != 1 else ''}"
-
-                # Concatenating all parts with spaces instead of commas
-                countdown_text = f"{days_text} {hours_text} {minutes_text} {seconds_text}"
-
-                countdown_placeholder.markdown(f"### {countdown_text}")
-            else:
-                countdown_placeholder.markdown("### The Go Live event is NOW!")
-
-            time.sleep(1)
+        for project, go_live in projects.items():
+            st.write(f"{project}: {go_live}")
     else:
-        st.write("No projects in the database. Upload some!")
+        st.write("No projects found.")
 
-# Admin Page
-elif page == "Setup (Admin only)":
-    password = st.sidebar.text_input("Enter Admin Password", type="password")
+# Tab 2: Upload Projects
+with tab2:
+    st.header("Upload Projects")
+    uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
+    if uploaded_file:
+        upload_file(uploaded_file)
+
+# Tab 3: Admin
+with tab3:
+    st.header("Admin Panel")
+    password = st.text_input("Enter Admin Password", type="password")
     if password == ADMIN_PASSWORD:
-        st.session_state.is_admin = True
-        st.sidebar.success("Logged in as Admin")
-        
-        uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
-        if uploaded_file:
-            upload_file(uploaded_file)
-            st.session_state.projects = load_projects_firestore()
-
-        projects = st.session_state.projects
-        if projects:
-            project_to_delete = st.sidebar.selectbox("Delete Project", list(projects.keys()))
-            if st.sidebar.button("Delete"):
-                # Add code for deleting project from Firestore
-                pass
-
-        st.sidebar.subheader("Download Excel Template")
-        template = generate_template()
-        st.sidebar.download_button("Download Template", data=template, file_name="template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.success("Welcome, Admin!")
+        if st.button('Download Project Template'):
+            generate_template()
+        st.text_area("Add additional administrative information here.")
     else:
-        st.sidebar.write("Please log in to manage projects.")
+        st.warning("Incorrect password.")
