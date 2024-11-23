@@ -107,7 +107,16 @@ if page == "Countdown":
                 days_left = time_left.days
                 hours_left, remainder = divmod(time_left.seconds, 3600)
                 minutes_left, seconds_left = divmod(remainder, 60)
-                countdown_text = f"{days_left}d {hours_left}h {minutes_left}m {seconds_left}s"
+
+                # Full spelling without commas, singular/plural handled
+                days_text = f"{days_left} day{'s' if days_left != 1 else ''}"
+                hours_text = f"{hours_left} hour{'s' if hours_left != 1 else ''}"
+                minutes_text = f"{minutes_left} minute{'s' if minutes_left != 1 else ''}"
+                seconds_text = f"{seconds_left} second{'s' if seconds_left != 1 else ''}"
+
+                # Concatenating all parts with spaces instead of commas
+                countdown_text = f"{days_text} {hours_text} {minutes_text} {seconds_text}"
+                
                 countdown_placeholder.markdown(f"### {countdown_text}")
             else:
                 countdown_placeholder.markdown("### The Go Live event is NOW!")
