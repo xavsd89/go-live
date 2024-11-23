@@ -1,93 +1,102 @@
 import streamlit as st
-import pandas as pd
-import sqlite3
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
 import datetime
-import time
-from io import BytesIO
 
-ADMIN_PASSWORD = "admin123"
+# Initialize Firebase using the credentials stored in Streamlit secrets
+def initialize_firebase():
+    # Load Firebase credentials from Streamlit secrets
+    firebase_credentials = st.secrets["firebase_credentials"]
+    cred_dict = json.loads(firebase_credentials)
+    cred = credentials.Certificate(cred_dict)
 
-# Drop the existing projects table
-def drop_table():
-    conn = sqlite3.connect('projects.db')
-    conn.execute('DROP TABLE IF EXISTS projects')
-    conn.commit()
-    conn.close()
+    # Initialize the Firebase app (only if it's not already initialized)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
 
-# Create the table for storing project details
-def create_db():
-    conn = sqlite3.connect('projects.db')
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS projects (
-        project_name TEXT,
-        go_live_date TEXT
-    )''')
-    conn.commit()
-    conn.close()
+    # Return a Firestore client
+    return firestore.client()
 
-# Insert project into the database
-def insert_project(project_name, go_live_date):
-    conn = sqlite3.connect('projects.db')
-    conn.execute('INSERT INTO projects (project_name, go_live_date) VALUES (?, ?)', 
-                 (project_name, go_live_date))
-    conn.commit()
-    conn.close()
+# Firebase Firestore operation (e.g., insert project)
+def insert_project_to_firestore(project_name, go_live_date):
+    db = initialize_firebase()
+    projects_ref = db.collection('projects')
+    project_data = {
+        "project_name": project_name,
+        "go_live_date": go_live_date
+    }
+    projects_ref.add(project_data)
 
-# Delete project from the database
-def delete_project(project_name):
-    conn = sqlite3.connect('projects.db')
-    conn.execute('DELETE FROM projects WHERE project_name = ?', (project_name,))
-    conn.commit()
-    conn.close()
-
-# Load all projects from the database
-def load_projects():
-    conn = sqlite3.connect('projects.db')
-    cursor = conn.execute('SELECT project_name, go_live_date FROM projects')
-    projects = {row[0]: datetime.datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S') for row in cursor.fetchall()}
-    conn.close()
+# Firebase Firestore operation (e.g., load projects)
+def load_projects_from_firestore():
+    db = initialize_firebase()
+    projects_ref = db.collection('projects')
+    docs = projects_ref.stream()
+    projects = {}
+    for doc in docs:
+        project_data = doc.to_dict()
+        project_name = project_data.get("project_name")
+        go_live_date = project_data.get("go_live_date")
+        projects[project_name] = go_live_date
     return projects
 
-# Handle Excel upload
-def upload_file(uploaded_file):
-    df = pd.read_excel(uploaded_file)
-    if 'Project Name' not in df.columns or 'Go Live Date' not in df.columns:
-        st.error('Excel must have "Project Name" and "Go Live Date" columns')
-        return
+# Streamlit Page Setup
+st.title("Project Management with Firebase")
+
+# Dropdown to select project
+projects = load_projects_from_firestore()
+
+if projects:
+    project_name = st.selectbox("Select a Project", list(projects.keys()))
+    st.write(f"Go Live Date: {projects[project_name]}")
+
+# Admin Page (for adding projects)
+if st.button("Add Project"):
+    project_name = st.text_input("Project Name")
+    go_live_date = st.date_input("Go Live Date")
     
-    for _, row in df.iterrows():
-        project_name = row['Project Name']
-        go_live_date = pd.to_datetime(row['Go Live Date']).strftime('%Y-%m-%d %H:%M:%S')
-        insert_project(project_name, go_live_date)
-    st.success('Projects uploaded')
+    if st.button("Submit"):
+        if project_name and go_live_date:
+            insert_project_to_firestore(project_name, go_live_date)
+            st.success(f"Project '{project_name}' added successfully!")
 
-# Generate an Excel template for first-time users
-def generate_template():
-    data = {
-        'Project Name': ['Project A', 'Project B'],
-        'Go Live Date': ['2024-12-01 12:00:00', '2024-12-15 15:00:00']
-    }
-    df = pd.DataFrame(data)
-    buffer = BytesIO()
-    df.to_excel(buffer, index=False)
-    buffer.seek(0)
-    return buffer
-
-# Initialize DB if it doesn't exist
-drop_table()
-create_db()
-
-# Set session state for admin
-if 'is_admin' not in st.session_state:
+# Admin login (for added security)
+ADMIN_PASSWORD = "admin123"
+if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
-# Sidebar page selection
-page = st.sidebar.radio("Select Page", ["Countdown", "Setup (Admin only)"])
+# Sidebar for admin password input
+password = st.sidebar.text_input("Enter Admin Password", type="password")
+if password == ADMIN_PASSWORD:
+    st.session_state.is_admin = True
+    st.sidebar.success("Logged in as Admin")
+else:
+    if password != "":
+        st.sidebar.error("Invalid Password")
 
-# Countdown Page
+# Admin section to upload projects
+if st.session_state.is_admin:
+    st.sidebar.subheader("Upload Project Data")
+    
+    uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
+    if uploaded_file:
+        # Process the uploaded Excel file
+        import pandas as pd
+        df = pd.read_excel(uploaded_file)
+        if 'Project Name' not in df.columns or 'Go Live Date' not in df.columns:
+            st.sidebar.error('Excel must have "Project Name" and "Go Live Date" columns')
+        else:
+            for _, row in df.iterrows():
+                project_name = row['Project Name']
+                go_live_date = pd.to_datetime(row['Go Live Date']).strftime('%Y-%m-%d %H:%M:%S')
+                insert_project_to_firestore(project_name, go_live_date)
+            st.sidebar.success("Projects uploaded successfully")
+
+# Display the available projects for countdown
 if page == "Countdown":
     if 'projects' not in st.session_state:
-        st.session_state.projects = load_projects()
+        st.session_state.projects = load_projects_from_firestore()
 
     projects = st.session_state.projects
 
@@ -97,7 +106,7 @@ if page == "Countdown":
         def get_time_left(go_live):
             return go_live - datetime.datetime.now()
 
-        st.write(f"Go Live date for {project}: {projects[project]:%Y-%m-%d %H:%M:%S}")
+        st.write(f"Go Live date for {project}: {projects[project]}")
 
         countdown_placeholder = st.empty()
         
@@ -125,28 +134,18 @@ if page == "Countdown":
     else:
         st.write("No projects in the database. Upload some!")
 
-# Admin Page
-elif page == "Setup (Admin only)":
-    password = st.sidebar.text_input("Enter Admin Password", type="password")
-    if password == ADMIN_PASSWORD:
-        st.session_state.is_admin = True
-        st.sidebar.success("Logged in as Admin")
-        
-        uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
-        if uploaded_file:
-            upload_file(uploaded_file)
-            st.session_state.projects = load_projects()
+# Template download (for first-time users)
+def generate_template():
+    data = {
+        'Project Name': ['Project A', 'Project B'],
+        'Go Live Date': ['2024-12-01 12:00:00', '2024-12-15 15:00:00']
+    }
+    df = pd.DataFrame(data)
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    return buffer
 
-        projects = st.session_state.projects
-        if projects:
-            project_to_delete = st.sidebar.selectbox("Delete Project", list(projects.keys()))
-            if st.sidebar.button("Delete"):
-                delete_project(project_to_delete)
-                st.session_state.projects = load_projects()
-                st.sidebar.success(f"Deleted {project_to_delete}")
-
-        st.sidebar.subheader("Download Excel Template")
-        template = generate_template()
-        st.sidebar.download_button("Download Template", data=template, file_name="template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else:
-        st.sidebar.write("Please log in to manage projects.")
+st.sidebar.subheader("Download Excel Template")
+template = generate_template()
+st.sidebar.download_button("Download Template", data=template, file_name="template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
