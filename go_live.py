@@ -1,43 +1,51 @@
 import streamlit as st
-import pandas as pd
 import firebase_admin
-from firebase_admin import credentials, db
+from firebase_admin import credentials, firestore
+import pandas as pd
+import sqlite3
 import datetime
 import time
 from io import BytesIO
 
-# Firebase setup
-cred = credentials.Certificate("path_to_your_service_account_key.json")
-firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://your-database-name.firebaseio.com/'
-})
+# Firebase setup from Streamlit Secrets
+cred_dict = st.secrets["firebase"]
+cred = credentials.Certificate(cred_dict)
+firebase_admin.initialize_app(cred)
 
-# Firebase reference
-projects_ref = db.reference('projects')
+db = firestore.client()
 
 ADMIN_PASSWORD = "admin123"
 
-# Insert project into Firebase Realtime Database
-def insert_project(project_name, go_live_date):
-    project_ref = projects_ref.child(project_name)
-    project_ref.set({
-        'project_name': project_name,
-        'go_live_date': go_live_date
+# Drop the existing projects collection in Firestore (if needed)
+def drop_firestore_collection():
+    projects_ref = db.collection("projects")
+    docs = projects_ref.stream()
+    for doc in docs:
+        doc.reference.delete()
+
+# Create the Firestore collection for storing project details
+def create_firestore_collection():
+    projects_ref = db.collection("projects")
+    # Optionally, create a test entry to check if it works
+    projects_ref.add({
+        "project_name": "Test Project",
+        "go_live_date": datetime.datetime.now()
     })
 
-# Delete project from Firebase Realtime Database
-def delete_project(project_name):
-    project_ref = projects_ref.child(project_name)
-    project_ref.delete()
+# Insert project into Firestore
+def insert_project_firestore(project_name, go_live_date):
+    projects_ref = db.collection("projects")
+    projects_ref.add({
+        "project_name": project_name,
+        "go_live_date": go_live_date
+    })
 
-# Load all projects from Firebase
-def load_projects():
-    projects = projects_ref.get()
-    if projects:
-        return {project_name: datetime.datetime.strptime(project_data['go_live_date'], '%Y-%m-%d %H:%M:%S') 
-                for project_name, project_data in projects.items()}
-    else:
-        return {}
+# Load all projects from Firestore
+def load_projects_firestore():
+    projects_ref = db.collection("projects")
+    docs = projects_ref.stream()
+    projects = {doc.id: doc.to_dict()["go_live_date"] for doc in docs}
+    return projects
 
 # Handle Excel upload
 def upload_file(uploaded_file):
@@ -45,11 +53,11 @@ def upload_file(uploaded_file):
     if 'Project Name' not in df.columns or 'Go Live Date' not in df.columns:
         st.error('Excel must have "Project Name" and "Go Live Date" columns')
         return
-    
+     
     for _, row in df.iterrows():
         project_name = row['Project Name']
-        go_live_date = pd.to_datetime(row['Go Live Date']).strftime('%Y-%m-%d %H:%M:%S')
-        insert_project(project_name, go_live_date)
+        go_live_date = pd.to_datetime(row['Go Live Date'])
+        insert_project_firestore(project_name, go_live_date)
     st.success('Projects uploaded')
 
 # Generate an Excel template for first-time users
@@ -64,9 +72,9 @@ def generate_template():
     buffer.seek(0)
     return buffer
 
-# Initialize Firebase if needed
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
+# Initialize Firestore if it doesn't exist
+drop_firestore_collection()
+create_firestore_collection()
 
 # Set session state for admin
 if 'is_admin' not in st.session_state:
@@ -78,7 +86,7 @@ page = st.sidebar.radio("Select Page", ["Countdown", "Setup (Admin only)"])
 # Countdown Page
 if page == "Countdown":
     if 'projects' not in st.session_state:
-        st.session_state.projects = load_projects()
+        st.session_state.projects = load_projects_firestore()
 
     projects = st.session_state.projects
 
@@ -88,10 +96,10 @@ if page == "Countdown":
         def get_time_left(go_live):
             return go_live - datetime.datetime.now()
 
-        st.write(f"Go Live date for {project}: {projects[project]:%Y-%m-%d %H:%M:%S}")
+        st.write(f"Go Live date for {project}: {projects[project]}")
 
         countdown_placeholder = st.empty()
-        
+
         while True:
             time_left = get_time_left(projects[project])
             if time_left > datetime.timedelta(0):
@@ -107,7 +115,7 @@ if page == "Countdown":
 
                 # Concatenating all parts with spaces instead of commas
                 countdown_text = f"{days_text} {hours_text} {minutes_text} {seconds_text}"
-                
+
                 countdown_placeholder.markdown(f"### {countdown_text}")
             else:
                 countdown_placeholder.markdown("### The Go Live event is NOW!")
@@ -126,15 +134,14 @@ elif page == "Setup (Admin only)":
         uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
         if uploaded_file:
             upload_file(uploaded_file)
-            st.session_state.projects = load_projects()
+            st.session_state.projects = load_projects_firestore()
 
         projects = st.session_state.projects
         if projects:
             project_to_delete = st.sidebar.selectbox("Delete Project", list(projects.keys()))
             if st.sidebar.button("Delete"):
-                delete_project(project_to_delete)
-                st.session_state.projects = load_projects()
-                st.sidebar.success(f"Deleted {project_to_delete}")
+                # Add code for deleting project from Firestore
+                pass
 
         st.sidebar.subheader("Download Excel Template")
         template = generate_template()
