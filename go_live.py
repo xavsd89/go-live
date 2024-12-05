@@ -5,7 +5,8 @@ import time
 # Hardcoded list of projects with their "Go Live" dates
 projects = {
     "Mobile Attendance Tool (Malaysia)": datetime.datetime(2024, 12, 2, 10, 0),
-    "Empty Release Order (Thailand)": datetime.datetime(2024, 11, 25, 14, 0)
+    "Empty Release Order (Thailand)": datetime.datetime(2024, 11, 25, 14, 0),
+    "Empty Release Order (Singapore)": datetime.datetime(2024, 12, 31, 14, 0)
 }
 
 # Streamlit app title
@@ -45,7 +46,7 @@ while True:
         # Use the placeholder to update the countdown text with animation effect
         countdown_placeholder.markdown(f"### **{countdown_text}**")
     else:
-        countdown_placeholder.markdown("### The Go Live event is happening NOW!")
+        countdown_placeholder.markdown("### The Project has Gone LIVE!")
 
     # Refresh every second (1 second delay)
     time.sleep(1)
